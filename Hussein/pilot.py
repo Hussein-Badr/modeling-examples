@@ -56,13 +56,70 @@ model = gp.Model("Vehicle Routing Problem with Time Windows")
 x = model.addVars(K, A, vtype=GRB.BINARY, name="x")  # Vehicle k travels through arc (i, j)
 y = model.addVars(R, K, A, vtype=GRB.BINARY, name="y")  # Request r is transported by vehicle k through arc (i, j)
 z = model.addVars(K, A, vtype=GRB.BINARY, name="z")  # Node i precedes node j for vehicle k
-
+s = model.addVars(R, T, K, K, vtype=GRB.BINARY, name="s")
 # Objective function: Minimize total travel cost
 model.setObjective(gp.quicksum(c_kij[k, i, j] * x[k, i, j] for k in K for i, j in A), GRB.MINIMIZE)
 
 # Constraints
 # Flow constraints, capacity constraints, etc., should be added here based on your problem definition
 
+#Original model constraints: 
+
+# Constraint(2.3.4): Each request is assigned to exactly one vehicle at its pickup location
+for r in R:
+    model.addConstr(gp.quicksum(gp.quicksum(y[p(r), j, k, r] for j in N if j != p(r)) for k in K) == 1, f"assign_request_to_vehicle_r{r}")
+
+# Constraint(2.3.5): Each request is assigned to exactly one vehicle at its delivery location
+for r in R:
+    model.addConstr(gp.quicksum(gp.quicksum(y[i, d(r), k, r] for i in N if i != d(r)) for k in K) == 1, f"assign_request_to_vehicle_r{r}_delivery")
+
+# Constraint(2.3.6): Balanced flow of requests through transfer stations
+for r in R:
+    for i in T:
+        model.addConstr(gp.quicksum(gp.quicksum(y[i, j, k, r] for j in N if j != i) for k in K) - gp.quicksum(gp.quicksum(y[j, i, k, r] for j in N if j != i) for k in K) == 0, f"balanced_flow_r{r}_i{i}")
+
+# Constraint(2.3.8): Request can only be transported on arcs where the vehicle is traveling
+for i, j in A:
+    for k in K:
+        for r in R:
+            model.addConstr(y[i, j, k, r] <= x[i, j, k], f"request_on_arc_constraint_{i}_{j}_{k}_{r}")
+
+# Constraint(2.3.9): Vehicle capacity constraint
+for i, j in A:
+    for k in K:
+        model.addConstr(gp.quicksum(q_r * y[i, j, k, r] for r in R) <= u_k * x[i, j, k], f"vehicle_capacity_constraint_{i}_{j}_{k}")
+
+
+# Constraint(2.3.16): Request flows cannot include nodes that are transfer stations, pickup, or delivery locations
+for r in R:
+    for k in K:
+        for i in N:
+            if i not in T and i != p(r) and i != d(r):
+                model.addConstr(gp.quicksum(y[i, j, k, r] for j in N if j != i) - gp.quicksum(y[j, i, k, r] for j in N if j != i) == 0, f"no_direct_transport_through_non_relevant_nodes_r{r}_k{k}_i{i}")
+
+# Constraint(2.3.21): A request can only be transported by a single vehicle between pickup and delivery, unless it's being transferred
+for r in R:
+    for t in T:
+        for k1 in K:
+            for k2 in K:
+                if k1 != k2:
+                    model.addConstr(gp.quicksum(gp.quicksum(y[i, j, k1, r] for j in N if j != i) for i in N if i != p(r)) + gp.quicksum(gp.quicksum(y[j, t, k2, r] for j in N if j != t) for i in N if i != d(r)) <= 1 + s[t, j, k1, k2], f"single_vehicle_transport_r{r}_t{t}_k1{k1}_k2{k2}")
+
+# Constraint(2.3.25): Vehicle can only leave its origin depot once
+for k in K:
+    model.addConstr(gp.quicksum(x[k, o(k), j] for j in N if j != o(k)) == 1, f"leave_origin_once_k{k}")
+
+# Constraint(2.4.2): Balanced flow of vehicles through nodes
+for k in K:
+    for i in PUDUT:
+        model.addConstr(gp.quicksum(gp.quicksum(x[i, j, k] for j in N if j != i) for j in N) - gp.quicksum(gp.quicksum(x[j, i, k] for j in N if j != i) for j in N) == 0, f"balanced_flow_vehicles_k{k}_i{i}")
+
+# Constraint(2.4.8): Non-negativity of arrival and departure times
+for i in N:
+    for k in K:
+        model.addConstr(a[i, k] >= 0, f"non_negative_arrival_time_{i}_{k}")
+        model.addConstr(b[i, k] >= 0, f"non_negative_departure_time_{i}_{k}")
+#added resundent constraints
 # Constraint(2.5.1): Vehicle cannot return to its origin depot
 for k in K:
     model.addConstr(gp.quicksum(x[k, j, o(k)] for j in N if j != o(k)) == 0, f"no_return_to_origin_k{k}")
